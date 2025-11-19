@@ -24,9 +24,9 @@ interface GestureDrawingAppProps {
   onBack: () => void;
 }
 
-type BrushType = 'normal' | 'glow' | 'spray' | 'neon' | 'rainbow';
+type BrushType = 'normal' | 'glow' | 'spray' | 'neon' | 'rainbow' | '3d' | 'particle';
 type ToolType = 'brush' | 'eraser' | 'line' | 'circle' | 'rectangle';
-type GestureType = 'none' | 'point' | 'pinch' | 'fist' | 'peace' | 'thumbsup' | 'palm' | 'ok' | 'rock';
+type GestureType = 'none' | 'point' | 'pinch' | 'fist' | 'peace' | 'thumbsup' | 'palm' | 'ok' | 'rock' | 'frame';
 
 export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -63,12 +63,14 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
     'https://images.unsplash.com/photo-1706148817964-08251bc8cf8c?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxuZW9uJTIwYWJzdHJhY3QlMjBhcnR8ZW58MXx8fHwxNzYzNDU0Mzk4fDA&ixlib=rb-4.1.0&q=80&w=1080',
     'https://images.unsplash.com/photo-1627498507373-18315e9bee0e?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxjb2xvcmZ1bCUyMHBhaW50JTIwc3BsYXR0ZXJ8ZW58MXx8fHwxNzYzNDcxMjYyfDA&ixlib=rb-4.1.0&q=80&w=1080',
     'https://images.unsplash.com/photo-1572756317709-fe9c15ced298?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxnZW9tZXRyaWMlMjBwYXR0ZXJufGVufDF8fHx8MTc2MzUyMjU1NHww&ixlib=rb-4.1.0&q=80&w=1080',
+    'WHITEBOARD', // Special marker for whiteboard
   ];
   const templateNames = [
     '街头涂鸦',
     '霓虹幻境',
     '彩色泼墨',
-    '几何空间'
+    '几何空间',
+    '经典白板'
   ];
 
   const colors = [
@@ -81,7 +83,7 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
     { name: 'White', value: '#ffffff' },
   ];
 
-  const brushTypes: BrushType[] = ['normal', 'glow', 'neon', 'spray', 'rainbow'];
+  const brushTypes: BrushType[] = ['normal', 'glow', 'neon', 'spray', 'rainbow', '3d', 'particle'];
 
   // Show gesture message with auto-hide
   const showGestureMessage = (message: string) => {
@@ -143,6 +145,48 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
     });
 
     showGestureMessage('↩️ 撤销成功');
+    showGestureMessage('↩️ 撤销成功');
+  };
+
+  // Save canvas as image
+  const saveCanvas = () => {
+    const canvas = canvasRef.current;
+    const drawingCanvas = drawingCanvasRef.current;
+    if (!canvas || !drawingCanvas) return;
+
+    // Create a temporary canvas to combine video/background and drawing
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = canvas.width;
+    tempCanvas.height = canvas.height;
+    const ctx = tempCanvas.getContext('2d');
+    if (!ctx) return;
+
+    // Draw background
+    if (presetImages[currentTemplate] === 'WHITEBOARD') {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+    } else {
+      // Draw the current video frame (which has the background overlay)
+      // Note: We can't easily get the background image directly if it's tainted, 
+      // but we can try drawing the main canvas which has the video feed + background overlay
+      ctx.drawImage(canvas, 0, 0);
+    }
+
+    // Draw drawing layer
+    ctx.drawImage(drawingCanvas, 0, 0);
+
+    // Download
+    try {
+      const dataUrl = tempCanvas.toDataURL('image/png');
+      const link = document.createElement('a');
+      link.download = `gesture-art-${Date.now()}.png`;
+      link.href = dataUrl;
+      link.click();
+      showGestureMessage('📸 作品已保存！');
+    } catch (error) {
+      console.error('Save failed:', error);
+      showGestureMessage('❌ 保存失败 (可能是跨域限制)');
+    }
   };
 
   // Detect gesture type from hand landmarks
@@ -250,6 +294,18 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
       return 'point';
     }
 
+    // Frame/Camera Gesture (L-shape)
+    // Thumb and Index extended, others curled.
+    if (!indexCurled && fingers.thumb && middleCurled && ringCurled && pinkyCurled) {
+      return 'frame'; // We'll check for TWO hands doing this in detectHands
+    }
+
+    // Frame/Camera Gesture (L-shape)
+    // Thumb and Index extended, others curled.
+    if (!indexCurled && fingers.thumb && middleCurled && ringCurled && pinkyCurled) {
+      return 'frame';
+    }
+
     return 'none';
   };
 
@@ -276,7 +332,9 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
           glow: '发光画笔',
           neon: '霓虹画笔',
           spray: '喷雾画笔',
-          rainbow: '彩虹画笔'
+          rainbow: '彩虹画笔',
+          '3d': '3D画笔',
+          particle: '粒子画笔'
         };
         showGestureMessage(`✨ ${brushNames[nextBrush]}`);
         break;
@@ -413,14 +471,30 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
         results = handLandmarkerRef.current.detectForVideo(video, performance.now());
       }
 
-      // Process hand landmarks - support both hands
+      // Process hand landmarks - support both hands with handedness
       let rightHand = null;
       let leftHand = null;
 
       if (results && results.landmarks && results.landmarks.length > 0) {
-        rightHand = results.landmarks[0];
-        if (results.landmarks.length > 1) {
-          leftHand = results.landmarks[1];
+        // Check handedness if available
+        if (results.handedness && results.handedness.length > 0) {
+          for (let i = 0; i < results.landmarks.length; i++) {
+            const handedness = results.handedness[i][0];
+            // MediaPipe handedness is mirrored: "Left" label means it appears on left side of screen,
+            // which is actually the user's RIGHT hand in a mirrored video.
+            // So: Label "Left" -> User's Right Hand. Label "Right" -> User's Left Hand.
+            if (handedness.categoryName === 'Left') {
+              rightHand = results.landmarks[i];
+            } else {
+              leftHand = results.landmarks[i];
+            }
+          }
+        } else {
+          // Fallback if no handedness (assume first is right if only one, or split if two)
+          rightHand = results.landmarks[0];
+          if (results.landmarks.length > 1) {
+            leftHand = results.landmarks[1];
+          }
         }
       }
 
@@ -430,7 +504,11 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
 
       // Combined gesture detection (using both hands)
       let combinedAction = '';
-      if (leftGesture === 'point' && rightGesture === 'pinch') {
+
+      // Frame Gesture: Both hands doing 'frame' (L-shape)
+      if (leftGesture === 'frame' && rightGesture === 'frame') {
+        combinedAction = 'snapshot';
+      } else if (leftGesture === 'point' && rightGesture === 'pinch') {
         combinedAction = 'change-color';
       } else if (leftGesture === 'fist' && rightGesture === 'fist') {
         combinedAction = 'undo';
@@ -443,7 +521,11 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
       // Handle combined actions (prevent duplicate triggers)
       const prevGesture = currentGesture;
       if (combinedAction && prevGesture !== combinedAction as GestureType) {
-        if (combinedAction === 'change-color') {
+        if (combinedAction === 'snapshot') {
+          showGestureMessage('📸 3..2..1..');
+          setTimeout(saveCanvas, 1000);
+          setCurrentGesture('frame');
+        } else if (combinedAction === 'change-color') {
           const currentIndex = colors.findIndex(c => c.value === currentColor);
           const nextColor = colors[(currentIndex + 1) % colors.length];
           setCurrentColor(nextColor.value);
@@ -461,7 +543,9 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
             glow: '发光画笔',
             neon: '霓虹画笔',
             spray: '喷雾画笔',
-            rainbow: '彩虹画笔'
+            rainbow: '彩虹画笔',
+            '3d': '3D画笔',
+            particle: '粒子画笔'
           };
           showGestureMessage(`✨ ${brushNames[nextBrush]}`);
           setCurrentGesture(combinedAction as GestureType);
@@ -474,8 +558,27 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
         }
       } else if (!combinedAction) {
         // Reset gesture state when no combined action
-        if (prevGesture === 'change-color' || prevGesture === 'undo' || prevGesture === 'change-brush' || prevGesture === 'change-template') {
+        if (prevGesture === 'change-color' || prevGesture === 'undo' || prevGesture === 'change-brush' || prevGesture === 'change-template' || prevGesture === 'frame') {
           setCurrentGesture('none');
+        }
+      }
+
+      // Process gestures that might conflict
+      // Priority: Drawing (Right Pinch) > Undo (Left Thumbs Up)
+
+      // Only process Left Hand Thumbs Up (Undo) if Right Hand is NOT Pinching (Drawing)
+      if (leftGesture === 'thumbsup' && rightGesture !== 'pinch' && !combinedAction) {
+        if (prevGesture !== 'thumbsup') {
+          undo();
+          setCurrentGesture('thumbsup');
+        }
+      } else if (leftGesture === 'thumbsup' && rightGesture === 'pinch') {
+        // Conflict case: Do NOTHING for left hand, let right hand draw
+        // This effectively ignores the undo command while drawing
+      } else if (leftGesture === 'palm' && !combinedAction) {
+        if (prevGesture !== 'palm') {
+          showGestureMessage('🖐️ 保持3秒清空画布');
+          setCurrentGesture('palm');
         }
       }
 
@@ -508,7 +611,8 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
           const actionIcons = {
             'change-color': '🎨',
             'undo': '↩️',
-            'change-brush': '✨'
+            'change-brush': '✨',
+            'snapshot': '📸'
           };
           ctx.font = '30px Arial';
           ctx.fillText(actionIcons[combinedAction as keyof typeof actionIcons] || '', x + 20, y - 20);
@@ -521,6 +625,9 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
         } else if (rightGesture === 'palm') {
           ctx.font = '30px Arial';
           ctx.fillText('🖐️', x + 20, y - 20);
+        } else if (rightGesture === 'frame') {
+          ctx.font = '30px Arial';
+          ctx.fillText('🖼️', x + 20, y - 20);
         }
 
         // Single hand actions (only if no combined action)
@@ -543,7 +650,7 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
           }
 
           // Update gesture state for single hand
-          if (rightGesture !== prevGesture && (rightGesture === 'pinch' || rightGesture === 'fist' || rightGesture === 'palm')) {
+          if (rightGesture !== prevGesture && (rightGesture === 'pinch' || rightGesture === 'fist' || rightGesture === 'palm' || rightGesture === 'frame')) {
             setCurrentGesture(rightGesture);
           }
         }
@@ -593,7 +700,7 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
       }
 
       // Draw left hand indicator if present
-      if (leftHand && combinedAction) {
+      if (leftHand) {
         const leftIndexTip = leftHand[8];
         const leftX = (1 - leftIndexTip.x) * canvas.width;
         const leftY = leftIndexTip.y * canvas.height;
@@ -606,8 +713,17 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
         ctx.fillStyle = '#ff10f0' + '40';
         ctx.fill();
 
-        // Draw connecting line between hands
-        if (rightHand) {
+        // Show gesture icon for left hand
+        if (leftGesture === 'thumbsup') {
+          ctx.font = '20px Arial';
+          ctx.fillText('👍', leftX + 10, leftY - 10);
+        } else if (leftGesture === 'frame') {
+          ctx.font = '20px Arial';
+          ctx.fillText('🖼️', leftX + 10, leftY - 10);
+        }
+
+        // Draw connecting line between hands if combined action
+        if (rightHand && combinedAction) {
           const rightIndexTip = rightHand[8];
           const rightX = (1 - rightIndexTip.x) * canvas.width;
           const rightY = rightIndexTip.y * canvas.height;
@@ -676,6 +792,30 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
           ctx.shadowColor = ctx.strokeStyle;
           ctx.lineWidth = brushSize;
           break;
+        case '3d':
+          ctx.shadowBlur = 2;
+          ctx.shadowColor = 'rgba(0,0,0,0.5)';
+          ctx.lineWidth = brushSize;
+          ctx.strokeStyle = currentColor;
+          // Draw shadow offset
+          ctx.beginPath();
+          ctx.moveTo(lastPositionRef.current.x + 4, lastPositionRef.current.y + 4);
+          ctx.lineTo(x + 4, y + 4);
+          ctx.stroke();
+          // Reset for main line
+          ctx.shadowBlur = 0;
+          break;
+        case 'particle':
+          // Draw particles along path
+          for (let i = 0; i < 3; i++) {
+            const px = x + (Math.random() - 0.5) * brushSize * 3;
+            const py = y + (Math.random() - 0.5) * brushSize * 3;
+            ctx.fillStyle = currentColor;
+            ctx.beginPath();
+            ctx.arc(px, py, Math.random() * brushSize / 3, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          return; // Skip default stroke
         default:
           ctx.shadowBlur = 0;
           ctx.strokeStyle = currentColor;
@@ -749,12 +889,17 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
     if (canvas) {
       const ctx = canvas.getContext('2d');
       if (ctx) {
-        const img = new Image();
-        img.crossOrigin = "anonymous";
-        img.src = presetImages[index];
-        img.onload = () => {
-          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        };
+        if (presetImages[index] === 'WHITEBOARD') {
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        } else {
+          const img = new Image();
+          img.crossOrigin = "anonymous";
+          img.src = presetImages[index];
+          img.onload = () => {
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          };
+        }
       }
     }
   };
@@ -880,8 +1025,11 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
                     { type: 'normal' as BrushType, label: '普通', icon: Brush },
                     { type: 'glow' as BrushType, label: '发光', icon: Sparkles },
                     { type: 'neon' as BrushType, label: '霓虹', icon: Sparkles },
+                    { type: 'neon' as BrushType, label: '霓虹', icon: Sparkles },
                     { type: 'spray' as BrushType, label: '喷雾', icon: Circle },
                     { type: 'rainbow' as BrushType, label: '彩虹', icon: Palette },
+                    { type: '3d' as BrushType, label: '3D', icon: Square },
+                    { type: 'particle' as BrushType, label: '粒子', icon: Sparkles },
                   ].map(({ type, label, icon: Icon }) => (
                     <button
                       key={type}
