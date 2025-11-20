@@ -16,7 +16,9 @@ import {
   X,
   ThumbsUp,
   Hand,
-  RotateCcw
+  RotateCcw,
+  Mic,
+  MicOff
 } from 'lucide-react';
 import { FilesetResolver, HandLandmarker, HandLandmarkerResult } from '@mediapipe/tasks-vision@0.10.17';
 
@@ -44,6 +46,7 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
   const [brushType, setBrushType] = useState<BrushType>('glow');
   const [currentTool, setCurrentTool] = useState<ToolType>('brush');
   const [showControls, setShowControls] = useState(false);
+  const [isVoiceEnabled, setIsVoiceEnabled] = useState(false);
 
   // Gesture feedback
   const [gestureMessage, setGestureMessage] = useState('');
@@ -314,6 +317,79 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
         break;
     }
   };
+
+
+
+  // Voice Control
+  useEffect(() => {
+    if (!isVoiceEnabled) return;
+
+    // @ts-ignore
+    if (!('webkitSpeechRecognition' in window)) {
+      alert('您的浏览器不支持语音控制，请使用 Chrome。');
+      setIsVoiceEnabled(false);
+      return;
+    }
+
+    // @ts-ignore
+    const recognition = new window.webkitSpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = false;
+    recognition.lang = 'zh-CN';
+
+    recognition.onresult = (event: any) => {
+      const lastResult = event.results[event.results.length - 1];
+      const command = lastResult[0].transcript.trim().toLowerCase();
+      console.log('Voice command:', command);
+
+      if (command.includes('清空') || command.includes('clear')) {
+        clearCanvas();
+        showGestureMessage('🎤 已清空画布');
+      } else if (command.includes('保存') || command.includes('save') || command.includes('拍照')) {
+        saveCanvas();
+      } else if (command.includes('红色') || command.includes('red')) {
+        setCurrentColor('#ff0040');
+        showGestureMessage('🎤 红色');
+      } else if (command.includes('蓝色') || command.includes('blue')) {
+        setCurrentColor('#00ffff');
+        showGestureMessage('🎤 蓝色');
+      } else if (command.includes('绿色') || command.includes('green')) {
+        setCurrentColor('#39ff14');
+        showGestureMessage('🎤 绿色');
+      } else if (command.includes('白色') || command.includes('white')) {
+        setCurrentColor('#ffffff');
+        showGestureMessage('🎤 白色');
+      } else if (command.includes('3d')) {
+        setBrushType('3d');
+        showGestureMessage('🎤 3D画笔');
+      } else if (command.includes('粒子') || command.includes('particle')) {
+        setBrushType('particle');
+        showGestureMessage('🎤 粒子画笔');
+      }
+    };
+
+    recognition.onerror = (event: any) => {
+      console.error('Voice recognition error:', event.error);
+      if (event.error === 'not-allowed') {
+        alert('请允许麦克风权限以使用语音控制。');
+        setIsVoiceEnabled(false);
+      }
+    };
+
+    try {
+      recognition.start();
+      showGestureMessage('🎤 语音控制已开启');
+    } catch (e) {
+      console.error('Voice recognition start failed:', e);
+      setIsVoiceEnabled(false);
+    }
+
+    return () => {
+      try {
+        recognition.stop();
+      } catch (e) { }
+    };
+  }, [isVoiceEnabled]);
 
   // Palm hold timer for clearing canvas
   const palmHoldStartRef = useRef<number | null>(null);
@@ -927,33 +1003,60 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
       </AnimatePresence>
 
       {/* Toggle Controls Button */}
-      <button
-        onClick={() => setShowControls(!showControls)}
-        className="fixed left-4 bottom-4 z-50 bg-[#39ff14] text-black p-4 hover:bg-[#ff10f0] transition-all"
-      >
-        {showControls ? <X className="w-6 h-6" /> : <Palette className="w-6 h-6" />}
-      </button>
+      <div className="fixed left-4 bottom-4 z-50 flex flex-col gap-3">
+        <button
+          onClick={() => setIsVoiceEnabled(!isVoiceEnabled)}
+          className={`p-4 rounded-full transition-all ${isVoiceEnabled ? 'bg-[#ff10f0] text-white' : 'bg-gray-800 text-gray-400'}`}
+          title="语音控制"
+        >
+          {isVoiceEnabled ? <Mic className="w-6 h-6" /> : <MicOff className="w-6 h-6" />}
+        </button>
+
+        <button
+          onClick={() => setShowControls(!showControls)}
+          className="bg-[#39ff14] text-black p-4 rounded-full hover:bg-[#ff10f0] transition-all"
+        >
+          {showControls ? <X className="w-6 h-6" /> : <Palette className="w-6 h-6" />}
+        </button>
+      </div>
 
       {/* Instructions */}
-      <div className="fixed right-4 bottom-4 bg-black/80 backdrop-blur-md border-2 border-white/20 p-4 max-w-sm">
-        <h3 className="font-bold mb-3 text-[#39ff14] text-lg">手势控制指南：</h3>
+      <div className="fixed right-4 bottom-4 bg-black/80 backdrop-blur-md border-2 border-white/20 p-4 max-w-sm rounded-xl">
+        <h3 className="font-bold mb-3 text-[#39ff14] text-lg">🎨 极简手势指南 (v2.1)</h3>
 
         <div className="mb-3">
-          <p className="text-xs text-gray-400 mb-2">【单手操作 - 右手】</p>
-          <ul className="text-sm space-y-1 text-gray-300">
-            <li>🤏 <strong>捏合</strong> = 画画</li>
-            <li>✊ <strong>握拳</strong> = 橡皮擦</li>
-            <li>🖐️ <strong>张开手掌3秒</strong> = 清空画布</li>
+          <p className="text-xs text-gray-400 mb-2">【通用手势 - 左右手均可】</p>
+          <ul className="text-sm space-y-2 text-gray-300">
+            <li className="flex items-center gap-2">
+              <span className="text-xl">🤏</span>
+              <span><strong>捏合</strong> = 画画</span>
+            </li>
+            <li className="flex items-center gap-2">
+              <span className="text-xl">✊</span>
+              <span><strong>握拳</strong> = 橡皮擦</span>
+            </li>
+            <li className="flex items-center gap-2">
+              <span className="text-xl">🖐️</span>
+              <span><strong>张开手掌 (3秒)</strong> = 清空</span>
+            </li>
+            <li className="flex items-center gap-2">
+              <span className="text-xl">👍</span>
+              <span><strong>竖大拇指</strong> = 撤销</span>
+            </li>
           </ul>
         </div>
 
         <div className="border-t border-white/20 pt-3">
-          <p className="text-xs text-gray-400 mb-2">【双手配合】</p>
-          <ul className="text-sm space-y-1 text-gray-300">
-            <li>👆+🤏 <strong>左手指 + 右手捏</strong> = 切换颜色</li>
-            <li>👍+🤏 <strong>左手赞 + 右手捏</strong> = 切换画笔</li>
-            <li>✊+✊ <strong>双手握拳</strong> = 撤销</li>
-            <li>✌️+✌️ <strong>双手胜利手势</strong> = 切换模板</li>
+          <p className="text-xs text-gray-400 mb-2">【特殊功能】</p>
+          <ul className="text-sm space-y-2 text-gray-300">
+            <li className="flex items-center gap-2">
+              <span className="text-xl">✌️✌️</span>
+              <span><strong>双手比耶</strong> = 拍照保存</span>
+            </li>
+            <li className="flex items-center gap-2">
+              <span className="text-xl">🎤</span>
+              <span><strong>语音</strong>: "红色", "清空", "保存"</span>
+            </li>
           </ul>
         </div>
       </div>
