@@ -190,6 +190,7 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
   };
 
   // Detect gesture type from hand landmarks
+  // Detect gesture type from hand landmarks
   const detectGesture = (landmarks: any[]): GestureType => {
     const wrist = landmarks[0];
     const thumbTip = landmarks[4];
@@ -218,92 +219,42 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
       (thumbTip.x - indexTip.x) ** 2 + (thumbTip.y - indexTip.y) ** 2
     );
 
-    // 1. FIST (Eraser)
-    // Strict: Index, Middle, Ring, Pinky must be curled.
-    if (indexCurled && middleCurled && ringCurled && pinkyCurled) {
-      return 'fist';
-    }
-
-    // 2. PINCH (Draw)
-    // Thumb and Index close.
-    // Critical: Index must NOT be curled (distinguishes from fist).
+    // Priority 1: PINCH (Draw) - Most important
+    // Thumb and Index close. Index NOT curled (to distinguish from fist).
     if (thumbIndexDist < 0.05 && !indexCurled) {
       return 'pinch';
     }
 
-    // 3. PEACE / VICTORY
-    // Index and Middle open (not curled). Ring and Pinky curled.
+    // Priority 2: PEACE (Snapshot/Template)
+    // Index and Middle open. Ring and Pinky curled.
     if (!indexCurled && !middleCurled && ringCurled && pinkyCurled) {
       return 'peace';
     }
 
-    // 4. OK Gesture
-    // Thumb and Index touching, others open.
-    if (thumbIndexDist < 0.05 && !middleCurled && !ringCurled && !pinkyCurled) {
-      return 'ok';
+    // Priority 3: THUMBS UP (Undo)
+    // Thumb extended, others curled.
+    // We check this BEFORE Fist because Fist requires "all curled".
+    // A simple check: Thumb tip is significantly higher (smaller y) than Index MCP (landmark 5)
+    // AND others are curled.
+    // Note: Orientation matters. Assuming upright hand.
+    const thumbTipToIndexMCP = Math.sqrt(
+      (thumbTip.x - landmarks[5].x) ** 2 + (thumbTip.y - landmarks[5].y) ** 2
+    );
+    // If thumb is far from index knuckle and others are curled
+    if (thumbTipToIndexMCP > 0.1 && indexCurled && middleCurled && ringCurled && pinkyCurled) {
+      return 'thumbsup';
     }
 
-    // 5. THUMBS UP
-    // Thumb extended (we assume), others curled.
-    // Since we don't have a robust thumb curl check, we rely on others being curled
-    // AND it not being a fist (which we already checked).
-    // If we are here, it's NOT a fist. So if index/middle/ring/pinky are curled,
-    // it must be that the thumb is doing something else (extended).
+    // Priority 4: FIST (Eraser)
+    // All fingers curled.
     if (indexCurled && middleCurled && ringCurled && pinkyCurled) {
-      // Wait, if all 4 are curled, it would have been caught by 'fist' above.
-      // So this block is unreachable unless we change logic.
-      // Actually, 'fist' returns early.
-      // So Thumbs Up needs to be distinguishable.
-      // In 'fist', we didn't check thumb.
-      // Let's refine 'fist' to require thumb to be close to index MCP?
-      // Or just assume if all 4 are curled, it's a fist, UNLESS thumb is clearly up?
-      // Let's stick to the previous logic for Thumbs Up but use the new 'curled' checks.
-      // Previous logic: fingers.thumb && !fingers.index ...
-      // Let's try:
-      return 'thumbsup';
+      return 'fist';
     }
 
-    // Re-implementing Thumbs Up properly:
-    // We need to distinguish Fist from Thumbs Up.
-    // In Thumbs Up, thumb tip is far from wrist/index MCP.
-    // In Fist, thumb is usually across fingers.
-    // Let's check Thumb Tip y vs Index MCP y? (Orientation dependent)
-    // Let's use the old simple logic for Thumbs Up as a fallback if it's not Fist/Pinch/Peace.
-
-    // Recalculate basic fingers state for fallback gestures
-    const fingers = {
-      thumb: landmarks[4].y < landmarks[3].y, // Simple height check
-      index: !indexCurled,
-      middle: !middleCurled,
-      ring: !ringCurled,
-      pinky: !pinkyCurled,
-    };
-
-    // Thumbs up (only thumb up)
-    if (fingers.thumb && !fingers.index && !fingers.middle && !fingers.ring && !fingers.pinky) {
-      return 'thumbsup';
-    }
-
-    // Open palm (all fingers up)
-    if (fingers.index && fingers.middle && fingers.ring && fingers.pinky) {
+    // Priority 5: PALM (Clear)
+    // All fingers open
+    if (!indexCurled && !middleCurled && !ringCurled && !pinkyCurled) {
       return 'palm';
-    }
-
-    // Point (only index up)
-    if (fingers.index && !fingers.middle && !fingers.ring && !fingers.pinky) {
-      return 'point';
-    }
-
-    // Frame/Camera Gesture (L-shape)
-    // Thumb and Index extended, others curled.
-    if (!indexCurled && fingers.thumb && middleCurled && ringCurled && pinkyCurled) {
-      return 'frame'; // We'll check for TWO hands doing this in detectHands
-    }
-
-    // Frame/Camera Gesture (L-shape)
-    // Thumb and Index extended, others curled.
-    if (!indexCurled && fingers.thumb && middleCurled && ringCurled && pinkyCurled) {
-      return 'frame';
     }
 
     return 'none';
@@ -471,279 +422,148 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
         results = handLandmarkerRef.current.detectForVideo(video, performance.now());
       }
 
-      // Process hand landmarks - support both hands with handedness
-      let rightHand = null;
-      let leftHand = null;
+      // State for this frame
+      let activePinchHand: any = null;
+      let activeFistHand: any = null;
+      let activePalmHand: any = null;
+      let activeThumbsUpHand: any = null;
+      let peaceCount = 0;
 
-      if (results && results.landmarks && results.landmarks.length > 0) {
-        // Check handedness if available
-        if (results.handedness && results.handedness.length > 0) {
-          for (let i = 0; i < results.landmarks.length; i++) {
-            const handedness = results.handedness[i][0];
-            // MediaPipe handedness is mirrored: "Left" label means it appears on left side of screen,
-            // which is actually the user's RIGHT hand in a mirrored video.
-            // So: Label "Left" -> User's Right Hand. Label "Right" -> User's Left Hand.
-            if (handedness.categoryName === 'Left') {
-              rightHand = results.landmarks[i];
-            } else {
-              leftHand = results.landmarks[i];
-            }
+      if (results && results.landmarks) {
+        for (const landmarks of results.landmarks) {
+          const gesture = detectGesture(landmarks);
+
+          // Draw cursor/feedback for this hand
+          const indexTip = landmarks[8];
+          const x = (1 - indexTip.x) * canvas.width;
+          const y = indexTip.y * canvas.height;
+
+          // Visual feedback
+          ctx.beginPath();
+          const cursorSize = gesture === 'fist' ? 20 : 10;
+          const cursorColor = gesture === 'fist' ? '#ff0040' : currentColor;
+          ctx.arc(x, y, cursorSize, 0, 2 * Math.PI);
+          ctx.strokeStyle = cursorColor;
+          ctx.lineWidth = 3;
+          ctx.stroke();
+
+          // Icon
+          let icon = '';
+          if (gesture === 'pinch') icon = '✏️';
+          else if (gesture === 'fist') icon = '🧹';
+          else if (gesture === 'peace') icon = '✌️';
+          else if (gesture === 'thumbsup') icon = '👍';
+          else if (gesture === 'palm') icon = '🖐️';
+
+          if (icon) {
+            ctx.font = '30px Arial';
+            ctx.fillText(icon, x + 20, y - 20);
           }
-        } else {
-          // Fallback if no handedness (assume first is right if only one, or split if two)
-          rightHand = results.landmarks[0];
-          if (results.landmarks.length > 1) {
-            leftHand = results.landmarks[1];
+
+          // Collect states
+          if (gesture === 'pinch') {
+            if (!activePinchHand) activePinchHand = { landmarks, x, y };
+          } else if (gesture === 'fist') {
+            if (!activeFistHand) activeFistHand = { landmarks, x, y };
+          } else if (gesture === 'peace') {
+            peaceCount++;
+          } else if (gesture === 'palm') {
+            activePalmHand = true;
+          } else if (gesture === 'thumbsup') {
+            activeThumbsUpHand = true;
           }
         }
       }
 
-      // Detect gestures for both hands
-      const rightGesture = rightHand ? detectGesture(rightHand) : 'none';
-      const leftGesture = leftHand ? detectGesture(leftHand) : 'none';
+      // --- LOGIC AGGREGATION ---
 
-      // Combined gesture detection (using both hands)
-      let combinedAction = '';
-
-      // Frame Gesture: Both hands doing 'frame' (L-shape)
-      if (leftGesture === 'frame' && rightGesture === 'frame') {
-        combinedAction = 'snapshot';
-      } else if (leftGesture === 'point' && rightGesture === 'pinch') {
-        combinedAction = 'change-color';
-      } else if (leftGesture === 'fist' && rightGesture === 'fist') {
-        combinedAction = 'undo';
-      } else if (leftGesture === 'thumbsup' && rightGesture === 'pinch') {
-        combinedAction = 'change-brush';
-      } else if (leftGesture === 'peace' && rightGesture === 'peace') {
-        combinedAction = 'change-template';
-      }
-
-      // Handle combined actions (prevent duplicate triggers)
-      const prevGesture = currentGesture;
-      if (combinedAction && prevGesture !== combinedAction as GestureType) {
-        if (combinedAction === 'snapshot') {
+      // 1. Double Peace -> Snapshot
+      if (peaceCount >= 2) {
+        if (currentGesture !== 'snapshot') {
           showGestureMessage('📸 3..2..1..');
           setTimeout(saveCanvas, 1000);
-          setCurrentGesture('frame');
-        } else if (combinedAction === 'change-color') {
-          const currentIndex = colors.findIndex(c => c.value === currentColor);
-          const nextColor = colors[(currentIndex + 1) % colors.length];
-          setCurrentColor(nextColor.value);
-          showGestureMessage(`🎨 ${nextColor.name}`);
-          setCurrentGesture(combinedAction as GestureType);
-        } else if (combinedAction === 'undo') {
-          undo();
-          setCurrentGesture(combinedAction as GestureType);
-        } else if (combinedAction === 'change-brush') {
-          const currentBrushIndex = brushTypes.indexOf(brushType);
-          const nextBrush = brushTypes[(currentBrushIndex + 1) % brushTypes.length];
-          setBrushType(nextBrush);
-          const brushNames = {
-            normal: '普通画笔',
-            glow: '发光画笔',
-            neon: '霓虹画笔',
-            spray: '喷雾画笔',
-            rainbow: '彩虹画笔',
-            '3d': '3D画笔',
-            particle: '粒子画笔'
-          };
-          showGestureMessage(`✨ ${brushNames[nextBrush]}`);
-          setCurrentGesture(combinedAction as GestureType);
-        } else if (combinedAction === 'change-template') {
-          const nextTemplate = (currentTemplate + 1) % presetImages.length;
-          setCurrentTemplate(nextTemplate);
-          loadTemplate(nextTemplate);
-          showGestureMessage(`🖼️ ${templateNames[nextTemplate]}`);
-          setCurrentGesture(combinedAction as GestureType);
-        }
-      } else if (!combinedAction) {
-        // Reset gesture state when no combined action
-        if (prevGesture === 'change-color' || prevGesture === 'undo' || prevGesture === 'change-brush' || prevGesture === 'change-template' || prevGesture === 'frame') {
-          setCurrentGesture('none');
+          setCurrentGesture('snapshot');
         }
       }
-
-      // Process gestures that might conflict
-      // Priority: Drawing (Right Pinch) > Undo (Left Thumbs Up)
-
-      // Only process Left Hand Thumbs Up (Undo) if Right Hand is NOT Pinching (Drawing)
-      if (leftGesture === 'thumbsup' && rightGesture !== 'pinch' && !combinedAction) {
-        if (prevGesture !== 'thumbsup') {
-          undo();
-          setCurrentGesture('thumbsup');
-        }
-      } else if (leftGesture === 'thumbsup' && rightGesture === 'pinch') {
-        // Conflict case: Do NOTHING for left hand, let right hand draw
-        // This effectively ignores the undo command while drawing
-      } else if (leftGesture === 'palm' && !combinedAction) {
-        if (prevGesture !== 'palm') {
+      // 2. Palm -> Clear (Hold)
+      else if (activePalmHand) {
+        if (palmHoldStartRef.current === null) {
+          palmHoldStartRef.current = Date.now();
           showGestureMessage('🖐️ 保持3秒清空画布');
-          setCurrentGesture('palm');
+        } else {
+          const holdTime = Date.now() - palmHoldStartRef.current;
+          const progress = Math.min(holdTime / PALM_HOLD_DURATION, 1);
+
+          // Show progress
+          if (progress < 1) {
+            ctx.save();
+            ctx.strokeStyle = '#ff10f0';
+            ctx.lineWidth = 5;
+            ctx.beginPath();
+            ctx.arc(canvas.width / 2, canvas.height / 2, 50, -Math.PI / 2, -Math.PI / 2 + (progress * Math.PI * 2));
+            ctx.stroke();
+            ctx.restore();
+          } else {
+            clearCanvas();
+            showGestureMessage('🗑️ 画布已清空！');
+            palmHoldStartRef.current = null;
+          }
         }
       }
+      // 3. Pinch -> Draw (Priority over Fist)
+      else if (activePinchHand) {
+        palmHoldStartRef.current = null;
+        const { x, y, landmarks } = activePinchHand;
 
-      // Process right hand for drawing (primary hand)
-      if (rightHand) {
-        // Index finger tip (landmark 8)
-        const indexTip = rightHand[8];
-        // Thumb tip (landmark 4)
-        const thumbTip = rightHand[4];
+        if (currentGesture !== 'pinch') {
+          saveToHistory();
+          showGestureMessage('✏️ 绘画中...');
+          setCurrentGesture('pinch');
+        }
 
-        // Convert to canvas coordinates (mirrored)
-        const x = (1 - indexTip.x) * canvas.width;
-        const y = indexTip.y * canvas.height;
+        draw(drawCtx, x, y);
+
+        // Draw connection line
+        const thumbTip = landmarks[4];
         const thumbX = (1 - thumbTip.x) * canvas.width;
         const thumbY = thumbTip.y * canvas.height;
-
-        // Draw cursor based on gesture
-        const cursorSize = rightGesture === 'fist' ? 20 : 10;
-        const cursorColor = rightGesture === 'fist' ? '#ff0040' : currentColor;
         ctx.beginPath();
-        ctx.arc(x, y, cursorSize, 0, 2 * Math.PI);
-        ctx.strokeStyle = cursorColor;
-        ctx.lineWidth = 3;
-        ctx.stroke();
-        ctx.fillStyle = cursorColor + '40';
-        ctx.fill();
-
-        // Show gesture indicator on cursor
-        if (combinedAction) {
-          const actionIcons = {
-            'change-color': '🎨',
-            'undo': '↩️',
-            'change-brush': '✨',
-            'snapshot': '📸'
-          };
-          ctx.font = '30px Arial';
-          ctx.fillText(actionIcons[combinedAction as keyof typeof actionIcons] || '', x + 20, y - 20);
-        } else if (rightGesture === 'pinch') {
-          ctx.font = '30px Arial';
-          ctx.fillText('✏️', x + 20, y - 20);
-        } else if (rightGesture === 'fist') {
-          ctx.font = '30px Arial';
-          ctx.fillText('🧹', x + 20, y - 20);
-        } else if (rightGesture === 'palm') {
-          ctx.font = '30px Arial';
-          ctx.fillText('🖐️', x + 20, y - 20);
-        } else if (rightGesture === 'frame') {
-          ctx.font = '30px Arial';
-          ctx.fillText('🖼️', x + 20, y - 20);
-        }
-
-        // Single hand actions (only if no combined action)
-        if (!combinedAction) {
-          if (rightGesture === 'pinch') {
-            // Pinch = Draw
-            if (prevGesture !== 'pinch') {
-              saveToHistory();
-              showGestureMessage('✏️ 开始绘画');
-            }
-            draw(drawCtx, x, y);
-          } else if (rightGesture === 'fist') {
-            // Fist = Erase
-            if (prevGesture !== 'fist') {
-              showGestureMessage('🧹 橡皮擦模式');
-            }
-            erase(drawCtx, x, y);
-          } else {
-            lastPositionRef.current = null;
-          }
-
-          // Update gesture state for single hand
-          if (rightGesture !== prevGesture && (rightGesture === 'pinch' || rightGesture === 'fist' || rightGesture === 'palm' || rightGesture === 'frame')) {
-            setCurrentGesture(rightGesture);
-          }
-        }
-
-        // Palm hold timer for clearing canvas
-        if (rightGesture === 'palm' && !combinedAction) {
-          if (palmHoldStartRef.current === null) {
-            palmHoldStartRef.current = Date.now();
-            showGestureMessage('🖐️ 保持3秒清空画布');
-          } else {
-            const holdTime = Date.now() - palmHoldStartRef.current;
-            const progress = Math.min(holdTime / PALM_HOLD_DURATION, 1);
-
-            // Show progress indicator
-            if (progress < 1) {
-              ctx.save();
-              ctx.strokeStyle = '#ff10f0';
-              ctx.lineWidth = 5;
-              ctx.beginPath();
-              ctx.arc(canvas.width / 2, canvas.height / 2, 50, -Math.PI / 2, -Math.PI / 2 + (progress * Math.PI * 2));
-              ctx.stroke();
-
-              ctx.fillStyle = 'white';
-              ctx.font = '20px Impact';
-              ctx.textAlign = 'center';
-              ctx.fillText(`${Math.ceil((1 - progress) * 3)}`, canvas.width / 2, canvas.height / 2 + 8);
-              ctx.restore();
-            } else if (holdTime >= PALM_HOLD_DURATION && palmHoldStartRef.current !== null) {
-              clearCanvas();
-              showGestureMessage('🗑️ 画布已清空！');
-              palmHoldStartRef.current = null;
-            }
-          }
-        } else {
-          palmHoldStartRef.current = null;
-        }
-
-        // Draw connection line when pinching
-        if (rightGesture === 'pinch' && !combinedAction) {
-          ctx.beginPath();
-          ctx.moveTo(thumbX, thumbY);
-          ctx.lineTo(x, y);
-          ctx.strokeStyle = currentColor;
-          ctx.lineWidth = 2;
-          ctx.stroke();
-        }
-      }
-
-      // Draw left hand indicator if present
-      if (leftHand) {
-        const leftIndexTip = leftHand[8];
-        const leftX = (1 - leftIndexTip.x) * canvas.width;
-        const leftY = leftIndexTip.y * canvas.height;
-
-        ctx.beginPath();
-        ctx.arc(leftX, leftY, 8, 0, 2 * Math.PI);
-        ctx.strokeStyle = '#ff10f0';
+        ctx.moveTo(thumbX, thumbY);
+        ctx.lineTo(x, y);
+        ctx.strokeStyle = currentColor;
         ctx.lineWidth = 2;
         ctx.stroke();
-        ctx.fillStyle = '#ff10f0' + '40';
-        ctx.fill();
+      }
+      // 4. Fist -> Erase
+      else if (activeFistHand) {
+        palmHoldStartRef.current = null;
+        const { x, y } = activeFistHand;
 
-        // Show gesture icon for left hand
-        if (leftGesture === 'thumbsup') {
-          ctx.font = '20px Arial';
-          ctx.fillText('👍', leftX + 10, leftY - 10);
-        } else if (leftGesture === 'frame') {
-          ctx.font = '20px Arial';
-          ctx.fillText('🖼️', leftX + 10, leftY - 10);
+        if (currentGesture !== 'fist') {
+          showGestureMessage('🧹 橡皮擦');
+          setCurrentGesture('fist');
         }
+        erase(drawCtx, x, y);
+        lastPositionRef.current = null;
+      }
+      // 5. Thumbs Up -> Undo
+      else if (activeThumbsUpHand) {
+        palmHoldStartRef.current = null;
+        lastPositionRef.current = null;
 
-        // Draw connecting line between hands if combined action
-        if (rightHand && combinedAction) {
-          const rightIndexTip = rightHand[8];
-          const rightX = (1 - rightIndexTip.x) * canvas.width;
-          const rightY = rightIndexTip.y * canvas.height;
-
-          ctx.beginPath();
-          ctx.setLineDash([5, 5]);
-          ctx.moveTo(leftX, leftY);
-          ctx.lineTo(rightX, rightY);
-          ctx.strokeStyle = '#ff10f0';
-          ctx.lineWidth = 2;
-          ctx.stroke();
-          ctx.setLineDash([]);
+        if (currentGesture !== 'thumbsup') {
+          undo();
+          showGestureMessage('↩️ 撤销');
+          setCurrentGesture('thumbsup');
         }
       }
-
-      if (!rightHand && !leftHand) {
-        lastPositionRef.current = null;
-        shapeStartRef.current = null;
-        setCurrentGesture('none');
+      // Nothing active
+      else {
         palmHoldStartRef.current = null;
+        lastPositionRef.current = null;
+        if (currentGesture !== 'none' && currentGesture !== 'snapshot') {
+          setCurrentGesture('none');
+        }
       }
 
       animationFrameRef.current = requestAnimationFrame(detectHands);
