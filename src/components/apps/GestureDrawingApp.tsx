@@ -237,8 +237,8 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
     }
 
     // Priority 2: PALM (Eraser/Clear) - 🖐️
-    // Logic: Wide spread of fingers relative to hand size.
-    // We calculate spread factor regardless of curl state to be more robust.
+    // Logic: Wide spread of fingers relative to hand size AND fingers extended.
+    // Fix: Added !ringCurled && !pinkyCurled to avoid confusing with Peace (✌️).
     const indexMiddleDist = Math.sqrt((indexTip.x - middleTip.x) ** 2 + (indexTip.y - middleTip.y) ** 2);
     const middleRingDist = Math.sqrt((middleTip.x - ringTip.x) ** 2 + (middleTip.y - ringTip.y) ** 2);
     const ringPinkyDist = Math.sqrt((ringTip.x - pinkyTip.x) ** 2 + (ringTip.y - pinkyTip.y) ** 2);
@@ -247,12 +247,13 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
     // Palm Condition:
     // 1. Spread is wide (> 0.8 * handSize)
     // 2. Thumb and Index are NOT pinching (dist > 0.5 * handSize)
-    if (spreadFactor > 0.8 * handSize && thumbIndexDist > 0.5 * handSize) {
+    // 3. Ring and Pinky are NOT curled (Distinguishes from Peace)
+    if (spreadFactor > 0.8 * handSize && thumbIndexDist > 0.5 * handSize && !ringCurled && !pinkyCurled) {
       return 'palm';
     }
 
     // Hysteresis for Palm
-    if (lastGesture === 'palm' && spreadFactor > 0.6 * handSize && thumbIndexDist > 0.5 * handSize) {
+    if (lastGesture === 'palm' && spreadFactor > 0.6 * handSize && thumbIndexDist > 0.5 * handSize && !ringCurled && !pinkyCurled) {
       return 'palm';
     }
 
@@ -543,10 +544,12 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
         for (const landmarks of results.landmarks) {
           const gesture = detectGesture(landmarks, currentGesture);
 
-          // Draw cursor/feedback for this hand
-          const indexTip = landmarks[8];
-          const x = (1 - indexTip.x) * canvas.width;
-          const y = indexTip.y * canvas.height;
+          // Determine cursor position based on gesture
+          // If Palm, use Palm Center (Middle Finger MCP - Landmark 9)
+          // Otherwise, use Index Finger Tip (Landmark 8)
+          const cursorPoint = gesture === 'palm' ? landmarks[9] : landmarks[8];
+          const x = (1 - cursorPoint.x) * canvas.width;
+          const y = cursorPoint.y * canvas.height;
 
           // Visual feedback
           ctx.beginPath();
