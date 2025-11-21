@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, ChangeEvent } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   ArrowLeft,
@@ -18,9 +18,10 @@ import {
   Hand,
   RotateCcw,
   Mic,
-  MicOff
+  MicOff,
+  Image as ImageIcon
 } from 'lucide-react';
-import { FilesetResolver, HandLandmarker, HandLandmarkerResult } from '@mediapipe/tasks-vision@0.10.17';
+import { FilesetResolver, HandLandmarker, HandLandmarkerResult } from '@mediapipe/tasks-vision';
 
 interface GestureDrawingAppProps {
   onBack: () => void;
@@ -28,7 +29,7 @@ interface GestureDrawingAppProps {
 
 type BrushType = 'normal' | 'glow' | 'spray' | 'neon' | 'rainbow' | '3d' | 'particle';
 type ToolType = 'brush' | 'eraser' | 'line' | 'circle' | 'rectangle';
-type GestureType = 'none' | 'point' | 'pinch' | 'fist' | 'peace' | 'thumbsup' | 'palm' | 'ok' | 'rock' | 'frame';
+type GestureType = 'none' | 'point' | 'pinch' | 'fist' | 'peace' | 'thumbsup' | 'palm' | 'ok' | 'rock' | 'frame' | 'wiping' | 'shaka' | 'snapshot';
 
 export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -56,24 +57,20 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
   const shapeStartRef = useRef<{ x: number; y: number } | null>(null);
 
   // Undo functionality
+  const lastUndoTimeRef = useRef<number>(0);
+  const undoFrameCountRef = useRef<number>(0);
   const [drawingHistory, setDrawingHistory] = useState<ImageData[]>([]);
   const maxHistoryLength = 20;
 
   // Preset templates
   const [currentTemplate, setCurrentTemplate] = useState(0);
   const presetImages = [
-    'https://images.unsplash.com/photo-1628522994788-53bc1b1502c5?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxncmFmZml0aSUyMHN0cmVldCUyMGFydHxlbnwxfHx8fDE3NjM1MjI1NTN8MA&ixlib=rb-4.1.0&q=80&w=1080',
-    'https://images.unsplash.com/photo-1706148817964-08251bc8cf8c?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxuZW9uJTIwYWJzdHJhY3QlMjBhcnR8ZW58MXx8fHwxNzYzNDU0Mzk4fDA&ixlib=rb-4.1.0&q=80&w=1080',
-    'https://images.unsplash.com/photo-1627498507373-18315e9bee0e?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxjb2xvcmZ1bCUyMHBhaW50JTIwc3BsYXR0ZXJ8ZW58MXx8fHwxNzYzNDcxMjYyfDA&ixlib=rb-4.1.0&q=80&w=1080',
-    'https://images.unsplash.com/photo-1572756317709-fe9c15ced298?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxnZW9tZXRyaWMlMjBwYXR0ZXJufGVufDF8fHx8MTc2MzUyMjU1NHww&ixlib=rb-4.1.0&q=80&w=1080',
-    'WHITEBOARD', // Special marker for whiteboard
+    '#000000', // Dark Mode
+    'WHITEBOARD', // Light Mode
   ];
   const templateNames = [
-    '街头涂鸦',
-    '霓虹幻境',
-    '彩色泼墨',
-    '几何空间',
-    '经典白板'
+    '暗黑模式',
+    '白板模式'
   ];
 
   const colors = [
@@ -109,7 +106,7 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
 
     try {
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      setDrawingHistory(prev => {
+      setDrawingHistory((prev: ImageData[]) => {
         const newHistory = [...prev, imageData];
         return newHistory.slice(-maxHistoryLength);
       });
@@ -133,7 +130,7 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
     if (!ctx) return;
 
     // Remove last state and get previous one
-    setDrawingHistory(prev => {
+    setDrawingHistory((prev: ImageData[]) => {
       const newHistory = [...prev];
       newHistory.pop(); // Remove current state
 
@@ -194,7 +191,7 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
 
   // Detect gesture type from hand landmarks
   // Detect gesture type from hand landmarks
-  const detectGesture = (landmarks: any[]): GestureType => {
+  const detectGesture = (landmarks: any[], lastGesture: GestureType): GestureType => {
     const wrist = landmarks[0];
     const thumbTip = landmarks[4];
     const indexTip = landmarks[8];
@@ -222,42 +219,64 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
       (thumbTip.x - indexTip.x) ** 2 + (thumbTip.y - indexTip.y) ** 2
     );
 
+    // Calculate Hand Size (Wrist to Middle MCP) for normalization
+    // This makes detection robust to distance and hand size (children vs adults)
+    const middleMCP = landmarks[9];
+    const handSize = Math.sqrt((wrist.x - middleMCP.x) ** 2 + (wrist.y - middleMCP.y) ** 2) || 0.1; // Fallback to 0.1 to avoid div by 0
+
     // Priority 1: PINCH (Draw) - Most important
-    // Thumb and Index close. Index NOT curled (to distinguish from fist).
-    if (thumbIndexDist < 0.05 && !indexCurled) {
+    // HYSTERESIS:
+    // Enter Pinch: dist < 0.3 * handSize
+    // Exit Pinch: dist > 0.5 * handSize
+    const pinchThreshold = (lastGesture === 'pinch' ? 0.5 : 0.3) * handSize;
+
+    // SKELETAL CHECK: Opposition. Thumb tip should be facing Index tip.
+    // FIX: Removed !indexCurled check to allow natural pinching at angles.
+    if (thumbIndexDist < pinchThreshold) {
       return 'pinch';
     }
 
-    // Priority 2: PEACE (Snapshot/Template)
+    // Priority 2: PALM (Eraser/Clear) - 🖐️
+    // Logic: Wide spread of fingers relative to hand size.
+    // We calculate spread factor regardless of curl state to be more robust.
+    const indexMiddleDist = Math.sqrt((indexTip.x - middleTip.x) ** 2 + (indexTip.y - middleTip.y) ** 2);
+    const middleRingDist = Math.sqrt((middleTip.x - ringTip.x) ** 2 + (middleTip.y - ringTip.y) ** 2);
+    const ringPinkyDist = Math.sqrt((ringTip.x - pinkyTip.x) ** 2 + (ringTip.y - pinkyTip.y) ** 2);
+    const spreadFactor = indexMiddleDist + middleRingDist + ringPinkyDist;
+
+    // Palm Condition:
+    // 1. Spread is wide (> 0.8 * handSize)
+    // 2. Thumb and Index are NOT pinching (dist > 0.5 * handSize)
+    if (spreadFactor > 0.8 * handSize && thumbIndexDist > 0.5 * handSize) {
+      return 'palm';
+    }
+
+    // Hysteresis for Palm
+    if (lastGesture === 'palm' && spreadFactor > 0.6 * handSize && thumbIndexDist > 0.5 * handSize) {
+      return 'palm';
+    }
+
+    // Priority 3: PEACE (Snapshot/Template)
     // Index and Middle open. Ring and Pinky curled.
     if (!indexCurled && !middleCurled && ringCurled && pinkyCurled) {
       return 'peace';
     }
 
-    // Priority 3: THUMBS UP (Undo)
-    // Thumb extended, others curled.
-    // We check this BEFORE Fist because Fist requires "all curled".
-    // A simple check: Thumb tip is significantly higher (smaller y) than Index MCP (landmark 5)
-    // AND others are curled.
-    // Note: Orientation matters. Assuming upright hand.
-    const thumbTipToIndexMCP = Math.sqrt(
-      (thumbTip.x - landmarks[5].x) ** 2 + (thumbTip.y - landmarks[5].y) ** 2
-    );
-    // If thumb is far from index knuckle and others are curled
-    if (thumbTipToIndexMCP > 0.1 && indexCurled && middleCurled && ringCurled && pinkyCurled) {
-      return 'thumbsup';
+    // Priority 4: SHAKA (Undo) - 🤙
+    // Thumb and Pinky extended. Index, Middle, Ring curled.
+    if (indexCurled && middleCurled && ringCurled && !pinkyCurled) {
+      // Check thumb extension (distance from index MCP)
+      const thumbTipToIndexMCP = Math.sqrt(
+        (thumbTip.x - landmarks[5].x) ** 2 + (thumbTip.y - landmarks[5].y) ** 2
+      );
+      if (thumbTipToIndexMCP > 0.1) {
+        return 'shaka';
+      }
     }
 
-    // Priority 4: FIST (Eraser)
-    // All fingers curled.
+    // Priority 5: FIST (Clear)
     if (indexCurled && middleCurled && ringCurled && pinkyCurled) {
       return 'fist';
-    }
-
-    // Priority 5: PALM (Clear)
-    // All fingers open
-    if (!indexCurled && !middleCurled && !ringCurled && !pinkyCurled) {
-      return 'palm';
     }
 
     return 'none';
@@ -293,18 +312,19 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
         showGestureMessage(`✨ ${brushNames[nextBrush]}`);
         break;
 
-      case 'thumbsup':
+      case 'shaka':
         // Undo
-        undo();
+        // undo(); // Handled in loop with cooldown
         break;
 
       case 'palm':
-        // Show confirmation for clear (you could add a timer here)
-        showGestureMessage('🖐️ 保持3秒清空画布');
+        if (currentTool === 'eraser') {
+          showGestureMessage('🖐️ 橡皮擦模式');
+        }
         break;
 
       case 'fist':
-        showGestureMessage('🧹 橡皮擦模式');
+        showGestureMessage('✊ 保持3秒清空画布');
         break;
 
       case 'pinch':
@@ -312,8 +332,10 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
         showGestureMessage('✏️ 绘画中...');
         break;
 
-      case 'point':
-        showGestureMessage('👆 移动光标');
+      case 'thumbsup':
+        if (currentTool === 'eraser') {
+          showGestureMessage('👍 橡皮擦模式');
+        }
         break;
     }
   };
@@ -334,12 +356,21 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
     // @ts-ignore
     const recognition = new window.webkitSpeechRecognition();
     recognition.continuous = true;
-    recognition.interimResults = false;
+    recognition.interimResults = true; // Enable interim results for better feedback
     recognition.lang = 'zh-CN';
 
     recognition.onresult = (event: any) => {
       const lastResult = event.results[event.results.length - 1];
-      const command = lastResult[0].transcript.trim().toLowerCase();
+      const transcript = lastResult[0].transcript.trim().toLowerCase();
+      const isFinal = lastResult.isFinal;
+
+      if (!isFinal) {
+        // Show interim feedback
+        showGestureMessage(`👂 正在听: ${transcript}...`);
+        return;
+      }
+
+      const command = transcript;
       console.log('Voice command:', command);
 
       if (command.includes('清空') || command.includes('clear')) {
@@ -365,6 +396,9 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
       } else if (command.includes('粒子') || command.includes('particle')) {
         setBrushType('particle');
         showGestureMessage('🎤 粒子画笔');
+      } else if (command.includes('背景') || command.includes('画布') || command.includes('background') || command.includes('template')) {
+        setCurrentTemplate((prev: number) => (prev + 1) % presetImages.length);
+        showGestureMessage('🎤 切换背景');
       }
     };
 
@@ -500,14 +534,14 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
 
       // State for this frame
       let activePinchHand: any = null;
-      let activeFistHand: any = null;
       let activePalmHand: any = null;
-      let activeThumbsUpHand: any = null;
+      let activeFistHand: any = null;
+      let activeShakaHand: any = null;
       let peaceCount = 0;
 
       if (results && results.landmarks) {
         for (const landmarks of results.landmarks) {
-          const gesture = detectGesture(landmarks);
+          const gesture = detectGesture(landmarks, currentGesture);
 
           // Draw cursor/feedback for this hand
           const indexTip = landmarks[8];
@@ -516,8 +550,8 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
 
           // Visual feedback
           ctx.beginPath();
-          const cursorSize = gesture === 'fist' ? 20 : 10;
-          const cursorColor = gesture === 'fist' ? '#ff0040' : currentColor;
+          const cursorSize = gesture === 'palm' ? 50 : (gesture === 'pinch' ? 5 : 10);
+          const cursorColor = gesture === 'palm' ? 'rgba(255, 255, 255, 0.5)' : currentColor;
           ctx.arc(x, y, cursorSize, 0, 2 * Math.PI);
           ctx.strokeStyle = cursorColor;
           ctx.lineWidth = 3;
@@ -526,10 +560,10 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
           // Icon
           let icon = '';
           if (gesture === 'pinch') icon = '✏️';
-          else if (gesture === 'fist') icon = '🧹';
-          else if (gesture === 'peace') icon = '✌️';
-          else if (gesture === 'thumbsup') icon = '👍';
           else if (gesture === 'palm') icon = '🖐️';
+          else if (gesture === 'fist') icon = '✊';
+          else if (gesture === 'peace') icon = '✌️';
+          else if (gesture === 'shaka') icon = '🤙';
 
           if (icon) {
             ctx.font = '30px Arial';
@@ -537,16 +571,17 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
           }
 
           // Collect states
+          // Collect states
           if (gesture === 'pinch') {
             if (!activePinchHand) activePinchHand = { landmarks, x, y };
+          } else if (gesture === 'palm') {
+            if (!activePalmHand) activePalmHand = { landmarks, x, y };
           } else if (gesture === 'fist') {
-            if (!activeFistHand) activeFistHand = { landmarks, x, y };
+            activeFistHand = true;
           } else if (gesture === 'peace') {
             peaceCount++;
-          } else if (gesture === 'palm') {
-            activePalmHand = true;
-          } else if (gesture === 'thumbsup') {
-            activeThumbsUpHand = true;
+          } else if (gesture === 'shaka') {
+            activeShakaHand = true;
           }
         }
       }
@@ -561,11 +596,11 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
           setCurrentGesture('snapshot');
         }
       }
-      // 2. Palm -> Clear (Hold)
-      else if (activePalmHand) {
+      // 2. Fist -> Clear (Hold)
+      else if (activeFistHand) {
         if (palmHoldStartRef.current === null) {
           palmHoldStartRef.current = Date.now();
-          showGestureMessage('🖐️ 保持3秒清空画布');
+          showGestureMessage('✊ 保持3秒清空画布');
         } else {
           const holdTime = Date.now() - palmHoldStartRef.current;
           const progress = Math.min(holdTime / PALM_HOLD_DURATION, 1);
@@ -573,7 +608,7 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
           // Show progress
           if (progress < 1) {
             ctx.save();
-            ctx.strokeStyle = '#ff10f0';
+            ctx.strokeStyle = '#ff0040';
             ctx.lineWidth = 5;
             ctx.beginPath();
             ctx.arc(canvas.width / 2, canvas.height / 2, 50, -Math.PI / 2, -Math.PI / 2 + (progress * Math.PI * 2));
@@ -593,11 +628,25 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
 
         if (currentGesture !== 'pinch') {
           saveToHistory();
-          showGestureMessage('✏️ 绘画中...');
+          // If tool is shape, start shape
+          if (['line', 'circle', 'rectangle'].includes(currentTool)) {
+            shapeStartRef.current = { x, y };
+            showGestureMessage('📐 绘制图形...');
+          } else {
+            showGestureMessage('✏️ 绘画中...');
+          }
           setCurrentGesture('pinch');
         }
 
-        draw(drawCtx, x, y);
+        if (['line', 'circle', 'rectangle'].includes(currentTool)) {
+          // Draw preview shape on overlay canvas (ctx)
+          if (shapeStartRef.current) {
+            // Clear previous preview (handled by loop clearing ctx)
+            drawShape(ctx, shapeStartRef.current.x, shapeStartRef.current.y, x, y);
+          }
+        } else {
+          draw(drawCtx, x, y);
+        }
 
         // Draw connection line
         const thumbTip = landmarks[4];
@@ -610,33 +659,49 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
         ctx.lineWidth = 2;
         ctx.stroke();
       }
-      // 4. Fist -> Erase
-      else if (activeFistHand) {
+      // 4. Palm -> Erase (Global Shortcut)
+      // Now works regardless of selected tool for better UX
+      else if (activePalmHand) {
         palmHoldStartRef.current = null;
-        const { x, y } = activeFistHand;
+        const { x, y } = activePalmHand;
 
-        if (currentGesture !== 'fist') {
-          showGestureMessage('🧹 橡皮擦');
-          setCurrentGesture('fist');
+        if (currentGesture !== 'palm') {
+          showGestureMessage('🖐️ 橡皮擦模式');
+          setCurrentGesture('palm');
         }
         erase(drawCtx, x, y);
         lastPositionRef.current = null;
       }
-      // 5. Thumbs Up -> Undo
-      else if (activeThumbsUpHand) {
+      // 5. Shaka -> Undo
+      else if (activeShakaHand) {
         palmHoldStartRef.current = null;
         lastPositionRef.current = null;
 
-        if (currentGesture !== 'thumbsup') {
-          undo();
-          showGestureMessage('↩️ 撤销');
-          setCurrentGesture('thumbsup');
+        // Increment frame counter
+        undoFrameCountRef.current++;
+
+        // Check if held long enough (e.g., 5 frames) AND cooldown passed
+        if (undoFrameCountRef.current > 5 && Date.now() - lastUndoTimeRef.current > 1000) {
+          if (currentGesture !== 'shaka') {
+            undo();
+            lastUndoTimeRef.current = Date.now();
+            undoFrameCountRef.current = 0; // Reset counter
+            setCurrentGesture('shaka');
+          }
         }
       }
       // Nothing active
       else {
+        // If we were pinching and now stopped, commit shape if needed
+        if (currentGesture === 'pinch' && ['line', 'circle', 'rectangle'].includes(currentTool) && shapeStartRef.current && lastPositionRef.current) {
+          // Commit shape to drawing canvas
+          drawShape(drawCtx, shapeStartRef.current.x, shapeStartRef.current.y, lastPositionRef.current.x, lastPositionRef.current.y);
+          shapeStartRef.current = null;
+        }
+
         palmHoldStartRef.current = null;
         lastPositionRef.current = null;
+        undoFrameCountRef.current = 0; // Reset undo counter if gesture lost
         if (currentGesture !== 'none' && currentGesture !== 'snapshot') {
           setCurrentGesture('none');
         }
@@ -730,7 +795,9 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
   const erase = (ctx: CanvasRenderingContext2D, x: number, y: number) => {
     ctx.globalCompositeOperation = 'destination-out';
     ctx.beginPath();
-    ctx.arc(x, y, brushSize * 2, 0, 2 * Math.PI);
+    // Make eraser bigger for Palm
+    const radius = currentGesture === 'palm' ? 50 : brushSize * 5;
+    ctx.arc(x, y, radius, 0, 2 * Math.PI);
     ctx.fill();
     ctx.globalCompositeOperation = 'source-over';
   };
@@ -788,6 +855,9 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
         if (presetImages[index] === 'WHITEBOARD') {
           ctx.fillStyle = '#ffffff';
           ctx.fillRect(0, 0, canvas.width, canvas.height);
+        } else if (presetImages[index].startsWith('#')) {
+          ctx.fillStyle = presetImages[index];
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
         } else {
           const img = new Image();
           img.crossOrigin = "anonymous";
@@ -799,6 +869,23 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
       }
     }
   };
+
+  // Load template when currentTemplate changes
+  useEffect(() => {
+    loadTemplate(currentTemplate);
+
+    // Auto-switch color for Whiteboard
+    if (presetImages[currentTemplate] === 'WHITEBOARD') {
+      setCurrentColor('#000000');
+      showGestureMessage('⚫️ 已切换黑色画笔');
+    } else {
+      // Switch back to neon if coming from whiteboard (optional, but good UX)
+      if (currentColor === '#000000') {
+        setCurrentColor('#39ff14');
+        showGestureMessage('🟢 已切换霓虹画笔');
+      }
+    }
+  }, [currentTemplate]);
 
   return (
     <div className="min-h-screen bg-black text-white relative overflow-hidden">
@@ -921,7 +1008,6 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
                     { type: 'normal' as BrushType, label: '普通', icon: Brush },
                     { type: 'glow' as BrushType, label: '发光', icon: Sparkles },
                     { type: 'neon' as BrushType, label: '霓虹', icon: Sparkles },
-                    { type: 'neon' as BrushType, label: '霓虹', icon: Sparkles },
                     { type: 'spray' as BrushType, label: '喷雾', icon: Circle },
                     { type: 'rainbow' as BrushType, label: '彩虹', icon: Palette },
                     { type: '3d' as BrushType, label: '3D', icon: Square },
@@ -942,6 +1028,25 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
                 </div>
               </div>
             )}
+
+            {/* Background Selection - MOVED OUTSIDE */}
+            <div className="mb-6">
+              <label className="block text-sm mb-3 text-gray-400">画布风格</label>
+              <div className="grid grid-cols-2 gap-2">
+                {templateNames.map((name, index) => (
+                  <button
+                    key={name}
+                    onClick={() => setCurrentTemplate(index)}
+                    className={`p-2 border-2 text-xs transition-all ${currentTemplate === index
+                      ? 'border-[#39ff14] bg-[#39ff14]/20'
+                      : 'border-white/20 hover:border-white/40'
+                      }`}
+                  >
+                    {name}
+                  </button>
+                ))}
+              </div>
+            </div>
 
             {/* Color Palette */}
             <div className="mb-6">
@@ -972,7 +1077,7 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
                 min="1"
                 max="50"
                 value={brushSize}
-                onChange={(e) => setBrushSize(Number(e.target.value))}
+                onChange={(e: ChangeEvent<HTMLInputElement>) => setBrushSize(Number(e.target.value))}
                 className="w-full"
                 style={{
                   accentColor: currentColor,
@@ -1009,7 +1114,14 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
           className={`p-4 rounded-full transition-all ${isVoiceEnabled ? 'bg-[#ff10f0] text-white' : 'bg-gray-800 text-gray-400'}`}
           title="语音控制"
         >
-          {isVoiceEnabled ? <Mic className="w-6 h-6" /> : <MicOff className="w-6 h-6" />}
+          {isVoiceEnabled ? (
+            <div className="relative">
+              <Mic className="w-6 h-6 relative z-10" />
+              <span className="absolute inset-0 bg-white rounded-full animate-ping opacity-50"></span>
+            </div>
+          ) : (
+            <MicOff className="w-6 h-6" />
+          )}
         </button>
 
         <button
@@ -1017,6 +1129,14 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
           className="bg-[#39ff14] text-black p-4 rounded-full hover:bg-[#ff10f0] transition-all"
         >
           {showControls ? <X className="w-6 h-6" /> : <Palette className="w-6 h-6" />}
+        </button>
+
+        <button
+          onClick={() => setCurrentTemplate((prev: number) => (prev + 1) % presetImages.length)}
+          className="bg-white text-black p-4 rounded-full hover:bg-gray-200 transition-all"
+          title="切换画布"
+        >
+          <ImageIcon className="w-6 h-6" />
         </button>
       </div>
 
@@ -1032,16 +1152,16 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
               <span><strong>捏合</strong> = 画画</span>
             </li>
             <li className="flex items-center gap-2">
-              <span className="text-xl">✊</span>
-              <span><strong>握拳</strong> = 橡皮擦</span>
-            </li>
-            <li className="flex items-center gap-2">
               <span className="text-xl">🖐️</span>
-              <span><strong>张开手掌 (3秒)</strong> = 清空</span>
+              <span><strong>张开手掌(橡皮)</strong> = 擦除</span>
             </li>
             <li className="flex items-center gap-2">
-              <span className="text-xl">👍</span>
-              <span><strong>竖大拇指</strong> = 撤销</span>
+              <span className="text-xl">✊</span>
+              <span><strong>握拳 (3秒)</strong> = 清空</span>
+            </li>
+            <li className="flex items-center gap-2">
+              <span className="text-xl">🤙</span>
+              <span><strong>六六六(Shaka)</strong> = 撤销</span>
             </li>
           </ul>
         </div>
@@ -1055,7 +1175,8 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
             </li>
             <li className="flex items-center gap-2">
               <span className="text-xl">🎤</span>
-              <span><strong>语音</strong>: "红色", "清空", "保存"</span>
+              {/* 4. Add voice commands for background switching */}
+              <span><strong>语音</strong>: "红色", "清空", "换背景"</span>
             </li>
           </ul>
         </div>
