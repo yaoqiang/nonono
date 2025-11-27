@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { HomePage } from './components/HomePage';
 import { GestureDrawingApp } from './components/apps/GestureDrawingApp';
+import { AuthorProfile } from './components/AuthorProfile';
 
-export type AppType = 'home' | 'gesture-drawing';
+export type AppType = 'home' | 'gesture-drawing' | 'author-profile';
 
 export default function App() {
   const [currentApp, setCurrentApp] = useState<AppType>('home');
@@ -11,6 +12,8 @@ export default function App() {
     switch (currentApp) {
       case 'gesture-drawing':
         return <GestureDrawingApp onBack={() => setCurrentApp('home')} />;
+      case 'author-profile':
+        return <AuthorProfile onBack={() => setCurrentApp('home')} />;
       case 'home':
       default:
         return <HomePage onLaunchApp={setCurrentApp} />;

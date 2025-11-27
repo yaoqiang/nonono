@@ -1,5 +1,5 @@
 import { motion } from 'motion/react';
-import { Video, Sparkles, Zap } from 'lucide-react';
+import { Video, Sparkles, Zap, User } from 'lucide-react';
 import type { AppType } from '../App';
 
 interface HomePageProps {
@@ -94,11 +94,23 @@ export function HomePage({ onLaunchApp }: HomePageProps) {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ delay: 1.5 }}
-          className="mt-20 text-center max-w-2xl"
+          className="mt-20 flex flex-col items-center gap-6"
         >
           <p className="text-sm tracking-widest text-gray-500 uppercase">
             This is a space for rebels & creators
           </p>
+          
+          <motion.button
+            onClick={() => onLaunchApp('author-profile')}
+            className="group flex items-center gap-2 px-6 py-3 bg-white/5 border border-white/10 hover:border-[#39ff14] hover:bg-[#39ff14]/10 transition-all"
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+          >
+            <User className="w-4 h-4 text-gray-400 group-hover:text-[#39ff14] transition-colors" />
+            <span className="text-gray-400 group-hover:text-[#39ff14] tracking-widest text-sm font-mono transition-colors">
+              WHO IS YAO?
+            </span>
+          </motion.button>
         </motion.div>
       </div>
 
