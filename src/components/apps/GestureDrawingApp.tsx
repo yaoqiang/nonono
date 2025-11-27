@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, ChangeEvent } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
+import { useOptimizedVoiceControl, VoiceCommand } from './VoiceOptimizer';
+import { usePerformanceOptimizer, MessageOptimizer, CanvasOptimizer } from './PerformanceOptimizer';
 import {
   ArrowLeft,
   Camera,
@@ -49,9 +51,18 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
   const [showControls, setShowControls] = useState(false);
   const [isVoiceEnabled, setIsVoiceEnabled] = useState(false);
 
-  // Gesture feedback
+  // Gesture feedback - 使用优化的消息系统
   const [gestureMessage, setGestureMessage] = useState('');
-  const gestureTimeoutRef = useRef<NodeJS.Timeout>();
+  const messageOptimizerRef = useRef<MessageOptimizer>();
+  const canvasOptimizerRef = useRef<CanvasOptimizer>();
+
+  // 性能优化Hook
+  const { queueUIUpdate, getPerformanceReport } = usePerformanceOptimizer();
+  const [showPerformancePanel, setShowPerformancePanel] = useState(false);
+  const [performanceData, setPerformanceData] = useState<any>(null);
+  
+  // 语音命令状态
+  const [lastVoiceCommand, setLastVoiceCommand] = useState<string>('');
 
   // Shape drawing
   const shapeStartRef = useRef<{ x: number; y: number } | null>(null);
@@ -61,6 +72,7 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
   const undoFrameCountRef = useRef<number>(0);
   const [drawingHistory, setDrawingHistory] = useState<ImageData[]>([]);
   const maxHistoryLength = 20;
+
 
   // Preset templates
   const [currentTemplate, setCurrentTemplate] = useState(0);
@@ -85,16 +97,60 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
 
   const brushTypes: BrushType[] = ['normal', 'glow', 'neon', 'spray', 'rainbow', '3d', 'particle'];
 
-  // Show gesture message with auto-hide
+  // 优化的消息显示函数 - 完全即时响应
   const showGestureMessage = (message: string) => {
+    // 直接设置消息，不使用优化器避免延迟
     setGestureMessage(message);
-    if (gestureTimeoutRef.current) {
-      clearTimeout(gestureTimeoutRef.current);
-    }
-    gestureTimeoutRef.current = setTimeout(() => {
+    
+    // 使用原生setTimeout快速清除
+    setTimeout(() => {
       setGestureMessage('');
-    }, 2000);
+    }, 500); // 进一步减少到500ms
   };
+
+  // 初始化消息优化器
+  useEffect(() => {
+    messageOptimizerRef.current = new MessageOptimizer(
+      (message) => {
+        // 直接更新，不使用队列延迟
+        setGestureMessage(message);
+      },
+      600 // 进一步减少到600ms，立即响应
+    );
+
+    return () => {
+      messageOptimizerRef.current?.cleanup();
+    };
+  }, [queueUIUpdate]);
+
+  // 初始化Canvas优化器
+  useEffect(() => {
+    if (drawingCanvasRef.current && !canvasOptimizerRef.current) {
+      canvasOptimizerRef.current = new CanvasOptimizer(drawingCanvasRef.current);
+    }
+
+    return () => {
+      canvasOptimizerRef.current?.cleanup();
+    };
+  }, []);
+
+  // 性能监控
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const report = getPerformanceReport?.();
+      if (report) {
+        setPerformanceData(report);
+        
+        // 如果性能不佳，自动调整优化策略
+        if (!report.isGood && report.fps < 30) {
+          console.warn('Performance degraded, adjusting settings...');
+          // 可以在这里调整画质、减少特效等
+        }
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [getPerformanceReport]);
 
   // Save current canvas state to history
   const saveToHistory = () => {
@@ -224,21 +280,19 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
     const middleMCP = landmarks[9];
     const handSize = Math.sqrt((wrist.x - middleMCP.x) ** 2 + (wrist.y - middleMCP.y) ** 2) || 0.1; // Fallback to 0.1 to avoid div by 0
 
-    // Priority 1: PINCH (Draw) - Most important
+    // Priority 1: PINCH (Draw) - 恢复原来流畅的检测
     // HYSTERESIS:
     // Enter Pinch: dist < 0.3 * handSize
     // Exit Pinch: dist > 0.5 * handSize
     const pinchThreshold = (lastGesture === 'pinch' ? 0.5 : 0.3) * handSize;
 
-    // SKELETAL CHECK: Opposition. Thumb tip should be facing Index tip.
-    // FIX: Removed !indexCurled check to allow natural pinching at angles.
+    // 简化的PINCH检测：只要拇指食指接近就判定为捏合
     if (thumbIndexDist < pinchThreshold) {
       return 'pinch';
     }
 
-    // Priority 2: PALM (Eraser/Clear) - 🖐️
+    // Priority 3: PALM (Eraser/Clear) - 🖐️
     // Logic: Wide spread of fingers relative to hand size AND fingers extended.
-    // Fix: Added !ringCurled && !pinkyCurled to avoid confusing with Peace (✌️).
     const indexMiddleDist = Math.sqrt((indexTip.x - middleTip.x) ** 2 + (indexTip.y - middleTip.y) ** 2);
     const middleRingDist = Math.sqrt((middleTip.x - ringTip.x) ** 2 + (middleTip.y - ringTip.y) ** 2);
     const ringPinkyDist = Math.sqrt((ringTip.x - pinkyTip.x) ** 2 + (ringTip.y - pinkyTip.y) ** 2);
@@ -257,13 +311,13 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
       return 'palm';
     }
 
-    // Priority 3: PEACE (Snapshot/Template)
+    // Priority 4: PEACE (Snapshot/Template)
     // Index and Middle open. Ring and Pinky curled.
     if (!indexCurled && !middleCurled && ringCurled && pinkyCurled) {
       return 'peace';
     }
 
-    // Priority 4: SHAKA (Undo) - 🤙
+    // Priority 5: SHAKA (Undo) - 🤙
     // Thumb and Pinky extended. Index, Middle, Ring curled.
     if (indexCurled && middleCurled && ringCurled && !pinkyCurled) {
       // Check thumb extension (distance from index MCP)
@@ -275,13 +329,9 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
       }
     }
 
-    // Priority 5: FIST (Clear)
-    if (indexCurled && middleCurled && ringCurled && pinkyCurled) {
-      return 'fist';
-    }
-
     return 'none';
   };
+
 
   // Handle gesture actions
   const handleGestureAction = (gesture: GestureType, prevGesture: GestureType) => {
@@ -324,9 +374,6 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
         }
         break;
 
-      case 'fist':
-        showGestureMessage('✊ 保持3秒清空画布');
-        break;
 
       case 'pinch':
         saveToHistory();
@@ -343,86 +390,101 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
 
 
 
-  // Voice Control
-  useEffect(() => {
-    if (!isVoiceEnabled) return;
+  // 优化的语音命令处理函数
+  const handleVoiceCommand = (command: VoiceCommand) => {
+    // 记录最近的语音命令
+    const commandText = getCommandDisplayText(command);
+    setLastVoiceCommand(commandText);
+    
+    // 3秒后清除显示
+    setTimeout(() => {
+      setLastVoiceCommand('');
+    }, 3000);
 
-    // @ts-ignore
-    if (!('webkitSpeechRecognition' in window)) {
-      alert('您的浏览器不支持语音控制，请使用 Chrome。');
-      setIsVoiceEnabled(false);
-      return;
-    }
-
-    // @ts-ignore
-    const recognition = new window.webkitSpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true; // Enable interim results for better feedback
-    recognition.lang = 'zh-CN';
-
-    recognition.onresult = (event: any) => {
-      const lastResult = event.results[event.results.length - 1];
-      const transcript = lastResult[0].transcript.trim().toLowerCase();
-      const isFinal = lastResult.isFinal;
-
-      if (!isFinal) {
-        // Show interim feedback
-        showGestureMessage(`👂 正在听: ${transcript}...`);
-        return;
-      }
-
-      const command = transcript;
-      console.log('Voice command:', command);
-
-      if (command.includes('清空') || command.includes('clear')) {
+    switch (command.type) {
+      case 'clear':
         clearCanvas();
-        showGestureMessage('🎤 已清空画布');
-      } else if (command.includes('保存') || command.includes('save') || command.includes('拍照')) {
+        break;
+      case 'save':
         saveCanvas();
-      } else if (command.includes('红色') || command.includes('red')) {
-        setCurrentColor('#ff0040');
-        showGestureMessage('🎤 红色');
-      } else if (command.includes('蓝色') || command.includes('blue')) {
-        setCurrentColor('#00ffff');
-        showGestureMessage('🎤 蓝色');
-      } else if (command.includes('绿色') || command.includes('green')) {
-        setCurrentColor('#39ff14');
-        showGestureMessage('🎤 绿色');
-      } else if (command.includes('白色') || command.includes('white')) {
-        setCurrentColor('#ffffff');
-        showGestureMessage('🎤 白色');
-      } else if (command.includes('3d')) {
-        setBrushType('3d');
-        showGestureMessage('🎤 3D画笔');
-      } else if (command.includes('粒子') || command.includes('particle')) {
-        setBrushType('particle');
-        showGestureMessage('🎤 粒子画笔');
-      } else if (command.includes('背景') || command.includes('画布') || command.includes('background') || command.includes('template')) {
+        break;
+      case 'color':
+        setCurrentColor(command.value);
+        break;
+      case 'brushType':
+        setBrushType(command.value);
+        break;
+      case 'tool':
+        setCurrentTool(command.value);
+        break;
+      case 'size':
+        if (command.value === 'bigger') {
+          setBrushSize(prev => Math.min(prev + 5, 50));
+        } else if (command.value === 'smaller') {
+          setBrushSize(prev => Math.max(prev - 5, 1));
+        }
+        break;
+      case 'background':
         setCurrentTemplate((prev: number) => (prev + 1) % presetImages.length);
-        showGestureMessage('🎤 切换背景');
-      }
-    };
+        break;
+    }
+  };
 
-    recognition.onerror = (event: any) => {
-      console.error('Voice recognition error:', event.error);
-      if (event.error === 'not-allowed') {
-        alert('请允许麦克风权限以使用语音控制。');
-        setIsVoiceEnabled(false);
-      }
-    };
+  // 获取命令显示文本
+  const getCommandDisplayText = (command: VoiceCommand): string => {
+    switch (command.type) {
+      case 'clear': return '✅ 清空画布';
+      case 'save': return '✅ 保存作品';
+      case 'color':
+        const colorNames: Record<string, string> = {
+          '#ff0040': '红色',
+          '#00ffff': '蓝色', 
+          '#39ff14': '绿色',
+          '#ffffff': '白色',
+          '#ffff00': '黄色',
+          '#ff10f0': '粉色',
+          '#b000ff': '紫色'
+        };
+        return `✅ ${colorNames[command.value] || '颜色'}`;
+      case 'brushType':
+        const brushNames: Record<string, string> = {
+          'glow': '发光画笔',
+          'neon': '霓虹画笔',
+          '3d': '3D画笔',
+          'particle': '粒子画笔',
+          'rainbow': '彩虹画笔',
+          'spray': '喷雾画笔',
+          'normal': '普通画笔'
+        };
+        return `✅ ${brushNames[command.value]}`;
+      case 'tool':
+        return `✅ ${command.value === 'brush' ? '画笔工具' : '橡皮工具'}`;
+      case 'size':
+        return `✅ 画笔${command.value === 'bigger' ? '变大' : '变小'}`;
+      case 'background':
+        return '✅ 切换背景';
+      default:
+        return '✅ 命令执行';
+    }
+  };
 
-    try {
-      recognition.start();
-      showGestureMessage('🎤 语音控制已开启');
-    } catch (e) {
-      console.error('Voice recognition start failed:', e);
-      setIsVoiceEnabled(false);
+  // 使用优化的语音控制Hook
+  const voiceControl = useOptimizedVoiceControl(
+    isVoiceEnabled,
+    handleVoiceCommand,
+    showGestureMessage
+  );
+
+  // 语音控制状态管理
+  useEffect(() => {
+    if (isVoiceEnabled) {
+      voiceControl.startRecognition();
+    } else {
+      voiceControl.stopRecognition();
     }
 
     return () => {
-      try {
-        recognition.stop();
-      } catch (e) { }
+      voiceControl.stopRecognition();
     };
   }, [isVoiceEnabled]);
 
@@ -536,7 +598,6 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
       // State for this frame
       let activePinchHand: any = null;
       let activePalmHand: any = null;
-      let activeFistHand: any = null;
       let activeShakaHand: any = null;
       let peaceCount = 0;
 
@@ -574,13 +635,10 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
           }
 
           // Collect states
-          // Collect states
           if (gesture === 'pinch') {
             if (!activePinchHand) activePinchHand = { landmarks, x, y };
           } else if (gesture === 'palm') {
             if (!activePalmHand) activePalmHand = { landmarks, x, y };
-          } else if (gesture === 'fist') {
-            activeFistHand = true;
           } else if (gesture === 'peace') {
             peaceCount++;
           } else if (gesture === 'shaka') {
@@ -599,32 +657,7 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
           setCurrentGesture('snapshot');
         }
       }
-      // 2. Fist -> Clear (Hold)
-      else if (activeFistHand) {
-        if (palmHoldStartRef.current === null) {
-          palmHoldStartRef.current = Date.now();
-          showGestureMessage('✊ 保持3秒清空画布');
-        } else {
-          const holdTime = Date.now() - palmHoldStartRef.current;
-          const progress = Math.min(holdTime / PALM_HOLD_DURATION, 1);
-
-          // Show progress
-          if (progress < 1) {
-            ctx.save();
-            ctx.strokeStyle = '#ff0040';
-            ctx.lineWidth = 5;
-            ctx.beginPath();
-            ctx.arc(canvas.width / 2, canvas.height / 2, 50, -Math.PI / 2, -Math.PI / 2 + (progress * Math.PI * 2));
-            ctx.stroke();
-            ctx.restore();
-          } else {
-            clearCanvas();
-            showGestureMessage('🗑️ 画布已清空！');
-            palmHoldStartRef.current = null;
-          }
-        }
-      }
-      // 3. Pinch -> Draw (Priority over Fist)
+      // 2. Pinch -> Draw
       else if (activePinchHand) {
         palmHoldStartRef.current = null;
         const { x, y, landmarks } = activePinchHand;
@@ -662,7 +695,7 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
         ctx.lineWidth = 2;
         ctx.stroke();
       }
-      // 4. Palm -> Erase (Global Shortcut)
+      // 3. Palm -> Erase (Global Shortcut)
       // Now works regardless of selected tool for better UX
       else if (activePalmHand) {
         palmHoldStartRef.current = null;
@@ -675,7 +708,7 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
         erase(drawCtx, x, y);
         lastPositionRef.current = null;
       }
-      // 5. Shaka -> Undo
+      // 4. Shaka -> Undo
       else if (activeShakaHand) {
         palmHoldStartRef.current = null;
         lastPositionRef.current = null;
@@ -936,6 +969,121 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
           </div>
         )}
 
+        {/* 性能监控面板 */}
+        {showPerformancePanel && performanceData && (
+          <div className="absolute top-4 right-4 bg-black/80 backdrop-blur-md border border-[#39ff14] p-4 rounded-lg z-40">
+            <h3 className="text-[#39ff14] font-bold mb-2">性能监控</h3>
+            <div className="space-y-1 text-sm">
+              <div className="flex justify-between">
+                <span>FPS:</span>
+                <span className={performanceData.fps > 45 ? 'text-green-400' : performanceData.fps > 30 ? 'text-yellow-400' : 'text-red-400'}>
+                  {performanceData.fps}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span>帧时间:</span>
+                <span className="text-white">{performanceData.averageFrameTime}ms</span>
+              </div>
+              <div className="flex justify-between">
+                <span>状态:</span>
+                <span className={performanceData.isGood ? 'text-green-400' : 'text-red-400'}>
+                  {performanceData.isGood ? '良好' : '需优化'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span>语音延迟:</span>
+                <span className="text-white">
+                  {isVoiceEnabled ? '已优化' : '未启用'}
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 语音命令面板 */}
+        {isVoiceEnabled && (
+          <div className="absolute top-4 left-4 bg-black/80 backdrop-blur-md border border-[#ff10f0] p-4 rounded-lg z-40 max-w-xs">
+            <div className="flex items-center gap-2 mb-3">
+              <Mic className="w-5 h-5 text-[#ff10f0]" />
+              <h3 className="text-[#ff10f0] font-bold">语音命令</h3>
+              <div className="w-2 h-2 bg-[#ff10f0] rounded-full animate-pulse"></div>
+            </div>
+            
+            <div className="space-y-3 text-sm">
+              {/* 颜色命令 */}
+              <div>
+                <h4 className="text-[#39ff14] font-semibold mb-1">🎨 颜色</h4>
+                <div className="grid grid-cols-2 gap-1 text-xs">
+                  <div className="flex items-center gap-1">
+                    <div className="w-2 h-2 bg-[#ff0040] rounded"></div>
+                    <span>"红色"</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <div className="w-2 h-2 bg-[#00ffff] rounded"></div>
+                    <span>"蓝色"</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <div className="w-2 h-2 bg-[#39ff14] rounded"></div>
+                    <span>"绿色"</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <div className="w-2 h-2 bg-[#ffffff] rounded border border-gray-500"></div>
+                    <span>"白色"</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <div className="w-2 h-2 bg-[#ffff00] rounded"></div>
+                    <span>"黄色"</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <div className="w-2 h-2 bg-[#ff10f0] rounded"></div>
+                    <span>"粉色"</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* 画笔命令 */}
+              <div>
+                <h4 className="text-[#39ff14] font-semibold mb-1">✨ 画笔</h4>
+                <div className="grid grid-cols-2 gap-1 text-xs text-gray-300">
+                  <span>"发光"</span>
+                  <span>"霓虹"</span>
+                  <span>"3D"</span>
+                  <span>"粒子"</span>
+                  <span>"彩虹"</span>
+                  <span>"普通"</span>
+                </div>
+              </div>
+
+              {/* 操作命令 */}
+              <div>
+                <h4 className="text-[#39ff14] font-semibold mb-1">🛠️ 操作</h4>
+                <div className="grid grid-cols-2 gap-1 text-xs text-gray-300">
+                  <span>"清空"</span>
+                  <span>"保存"</span>
+                  <span>"背景"</span>
+                  <span>"画笔"</span>
+                  <span>"橡皮"</span>
+                  <span>"大" / "小"</span>
+                </div>
+              </div>
+            </div>
+
+            {/* 最近执行的命令 */}
+            {lastVoiceCommand && (
+              <div className="mt-3 pt-2 border-t border-[#ff10f0]/30">
+                <div className="text-xs text-[#ff10f0] font-semibold mb-1">最近执行:</div>
+                <div className="text-sm text-white bg-[#ff10f0]/20 px-2 py-1 rounded">
+                  {lastVoiceCommand}
+                </div>
+              </div>
+            )}
+
+            <div className="mt-3 pt-2 border-t border-gray-600 text-xs text-gray-400">
+              💡 直接说出命令即可，无需唤醒词
+            </div>
+          </div>
+        )}
+
         {/* Drawing indicator */}
         <AnimatePresence>
           {currentGesture === 'pinch' && (
@@ -1105,6 +1253,40 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
                 <Download className="w-5 h-5" />
                 下载作品
               </button>
+
+              <button
+                onClick={() => setIsVoiceEnabled(!isVoiceEnabled)}
+                className={`w-full p-4 border-2 flex items-center gap-3 transition-all ${
+                  isVoiceEnabled
+                    ? 'border-[#39ff14] bg-[#39ff14]/20'
+                    : 'border-white/20 hover:border-white/40'
+                }`}
+              >
+                {isVoiceEnabled ? <Mic className="w-6 h-6" /> : <MicOff className="w-6 h-6" />}
+                <div className="text-left">
+                  <div className="font-bold">语音控制 🚀</div>
+                  <div className="text-xs text-gray-400">
+                    {isVoiceEnabled ? '已优化 - 低延迟模式' : '点击启用优化语音控制'}
+                  </div>
+                </div>
+              </button>
+
+              <button
+                onClick={() => setShowPerformancePanel(!showPerformancePanel)}
+                className={`w-full p-3 border-2 flex items-center gap-3 transition-all ${
+                  showPerformancePanel
+                    ? 'border-[#ff10f0] bg-[#ff10f0]/20'
+                    : 'border-white/20 hover:border-white/40'
+                }`}
+              >
+                <div className="w-5 h-5 text-center">📊</div>
+                <div className="text-left">
+                  <div className="font-bold">性能监控</div>
+                  <div className="text-xs text-gray-400">
+                    {performanceData ? `${performanceData.fps}fps` : '显示性能数据'}
+                  </div>
+                </div>
+              </button>
             </div>
           </motion.div>
         )}
@@ -1159,12 +1341,12 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
               <span><strong>张开手掌(橡皮)</strong> = 擦除</span>
             </li>
             <li className="flex items-center gap-2">
-              <span className="text-xl">✊</span>
-              <span><strong>握拳 (3秒)</strong> = 清空</span>
-            </li>
-            <li className="flex items-center gap-2">
               <span className="text-xl">🤙</span>
               <span><strong>六六六(Shaka)</strong> = 撤销</span>
+            </li>
+            <li className="flex items-center gap-2">
+              <span className="text-xl">🎤</span>
+              <span><strong>说"清空"</strong> = 清空画布</span>
             </li>
           </ul>
         </div>
@@ -1178,8 +1360,7 @@ export function GestureDrawingApp({ onBack }: GestureDrawingAppProps) {
             </li>
             <li className="flex items-center gap-2">
               <span className="text-xl">🎤</span>
-              {/* 4. Add voice commands for background switching */}
-              <span><strong>语音</strong>: "红色", "清空", "换背景"</span>
+              <span><strong>语音控制</strong>: 启用后查看左上角详细命令</span>
             </li>
           </ul>
         </div>
