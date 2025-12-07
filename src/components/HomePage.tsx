@@ -1,5 +1,5 @@
 import { motion } from 'motion/react';
-import { Video, Sparkles, Zap, User } from 'lucide-react';
+import { Video, Sparkles, Zap, User, Bot } from 'lucide-react';
 import type { AppType } from '../App';
 
 interface HomePageProps {
@@ -75,10 +75,13 @@ export function HomePage({ onLaunchApp }: HomePageProps) {
             delay={0}
           />
 
-          {/* Placeholder for future apps */}
-          <PlaceholderCard
-            title="COMING SOON"
-            icon={Sparkles}
+          {/* 喝酒地球 - 可点击进入应用 */}
+          <AppCard
+            title="DRINKING EARTH"
+            description="实时地球喝酒地图"
+            icon={Bot}
+            color="#ff10f0"
+            onClick={() => onLaunchApp('drinking-earth')}
             delay={0.1}
           />
 

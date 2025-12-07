@@ -43,21 +43,28 @@
         "react": "^18.3.1",
         "react-day-picker": "^8.10.1",
         "react-dom": "^18.3.1",
+        "react-globe.gl": "^2.37.0",
         "react-hook-form": "^7.55.0",
         "react-resizable-panels": "^2.1.7",
         "recharts": "^2.15.2",
         "sonner": "^2.0.3",
         "tailwind-merge": "*",
+        "three": "^0.181.2",
         "vaul": "^1.1.2"
     },
     "devDependencies": {
+        "@cloudflare/workers-types": "^4.20251128.0",
         "@types/node": "^20.10.0",
+        "@types/react": "^19.2.7",
+        "@types/react-dom": "^19.2.3",
         "@vitejs/plugin-react-swc": "^3.10.2",
-        "vite": "6.3.5"
+        "vite": "6.3.5",
+        "wrangler": "^3.91.0"
     },
     "scripts": {
-        "dev": "vite",
-        "build": "vite build"
+        "dev": "vite build && wrangler pages dev dist --compatibility-date=2024-01-01 --port 8788",
+        "build": "vite build",
+        "preview": "wrangler pages dev dist --compatibility-date=2024-01-01 --port 8788"
     },
     "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
 }
